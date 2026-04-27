@@ -1,4 +1,4 @@
-# Deploying the TWAMP on Ubuntu
+# Deploying TWAMP on Ubuntu
 
 This guide explains how to deploy the fork at `https://github.com/Corentinrhr/twamp-protocol` on an Ubuntu VM as a TWAMP reflector/server, using **TCP port 8862** for the TWAMP-Control connection and **UDP range 20000-30000** for TWAMP-Test sessions.
 
