@@ -24,22 +24,14 @@ jobs:
           - target: macos-arm64
             os: macos-14
 
+          - target: android-arm64
+            os: ubuntu-latest
+
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
         with:
           submodules: recursive
-          fetch-depth: 0
-
-      - name: Debug workspace
-        shell: bash
-        run: |
-          echo "Working directory: $(pwd)"
-          echo "Repository root:"
-          ls -la
-          echo
-          echo "Top-level files:"
-          find . -maxdepth 2 -type f | sort
 
       - name: Install Linux dependencies
         if: runner.os == 'Linux'
@@ -53,21 +45,40 @@ jobs:
         run: |
           brew install make || true
 
-      - name: Verify Makefile exists
+      - name: Patch Makefile for CI compatibility
         shell: bash
         run: |
-          test -f Makefile || { echo "Makefile not found at repository root"; exit 1; }
+          # 1. Remove header files from compile line (fixes macOS clang error)
+          sed -i.bak 's/ twamp\.h//g' Makefile || true
+          
+          # 2. Remove hardcoded -static flag (macOS lacks support, causes issues on Android)
+          sed -i.bak 's/-static//g' Makefile || true
+          
+          # 3. Replace hardcoded gcc with $(CC) to allow Android cross-compilation
+          sed -i.bak 's/\bgcc\b/$(CC)/g' Makefile || true
+          
+          echo "=== Patched Makefile ==="
+          cat Makefile
 
       - name: Build
         shell: bash
         run: |
-          make -j"$(getconf _NPROCESSORS_ONLN 2>/dev/null || sysctl -n hw.logicalcpu)"
+          if [ "${{ matrix.target }}" = "android-arm64" ]; then
+            echo "Configuring Android NDK Toolchain..."
+            # Find the aarch64 clang compiler in the installed NDK
+            export CC=$(ls $ANDROID_NDK_ROOT/toolchains/llvm/prebuilt/linux-x86_64/bin/aarch64-linux-android*-clang | grep -v "++" | sort -V | tail -n 1)
+            echo "Using compiler: $CC"
+            make CC="$CC" -j"$(getconf _NPROCESSORS_ONLN 2>/dev/null || nproc)"
+          else
+            make -j"$(getconf _NPROCESSORS_ONLN 2>/dev/null || sysctl -n hw.logicalcpu)"
+          fi
 
       - name: Collect server binary
         shell: bash
         run: |
           mkdir -p dist/server
-          find . -type f -name "twamp_server" -exec cp {} dist/server/ \;
+          # Copy 'server' and rename it to 'twamp_server' for the artifact
+          find . -maxdepth 2 -type f -name "server" -exec cp {} dist/server/twamp_server \;
           ls -lh dist/server/
           test "$(find dist/server -type f | wc -l)" -gt 0
 
@@ -83,7 +94,8 @@ jobs:
         shell: bash
         run: |
           mkdir -p dist/client
-          find . -type f -name "twamp_client" -exec cp {} dist/client/ \;
+          # Copy 'client' and rename it to 'twamp_client' for the artifact
+          find . -maxdepth 2 -type f -name "client" -exec cp {} dist/client/twamp_client \;
           ls -lh dist/client/
           test "$(find dist/client -type f | wc -l)" -gt 0
 
