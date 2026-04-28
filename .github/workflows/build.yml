@@ -9,6 +9,8 @@ on:
 
 env:
   ARTIFACT_RETENTION_DAYS: 30
+  # Suppress Node.js 20 deprecation warnings globally
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
 
 jobs:
   build:
@@ -29,7 +31,7 @@ jobs:
 
     steps:
       - name: Checkout code
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
         with:
           submodules: recursive
 
@@ -48,18 +50,10 @@ jobs:
       - name: Patch Makefile for CI compatibility
         shell: bash
         run: |
-          # 1. Remove header files from compile line (fixes macOS clang error)
           sed -i.bak 's/ twamp\.h//g' Makefile || true
-          
-          # 2. Remove hardcoded -static flag (macOS lacks support, causes cross-compilation issues)
           sed -i.bak 's/-static//g' Makefile || true
-          
-          # 3. Delete any existing CC assignment (like CC=gcc) to prevent Make recursive loop
           sed -i.bak '/^CC[[:space:]]*=/d' Makefile || true
-          
-          # 4. Replace hardcoded gcc binary calls with $(CC)
           sed -i.bak 's/gcc/$(CC)/g' Makefile || true
-          
           echo "=== Patched Makefile ==="
           cat Makefile
 
@@ -68,7 +62,6 @@ jobs:
         run: |
           if [ "${{ matrix.target }}" = "android-arm64" ]; then
             echo "Configuring Android NDK Toolchain..."
-            # Find the aarch64 clang compiler in the installed NDK
             export CC=$(ls $ANDROID_NDK_ROOT/toolchains/llvm/prebuilt/linux-x86_64/bin/aarch64-linux-android*-clang | grep -v "++" | sort -V | tail -n 1)
             echo "Using compiler: $CC"
             make CC="$CC" -j"$(getconf _NPROCESSORS_ONLN 2>/dev/null || nproc)"
@@ -80,7 +73,6 @@ jobs:
         shell: bash
         run: |
           mkdir -p dist/server
-          # Target exactly 'server' and move it to the expected artifact name
           find . -maxdepth 2 -type f -name "server" -exec cp {} dist/server/twamp_server \;
           ls -lh dist/server/
           test "$(find dist/server -type f | wc -l)" -gt 0
@@ -97,7 +89,6 @@ jobs:
         shell: bash
         run: |
           mkdir -p dist/client
-          # Target exactly 'client' and move it to the expected artifact name
           find . -maxdepth 2 -type f -name "client" -exec cp {} dist/client/twamp_client \;
           ls -lh dist/client/
           test "$(find dist/client -type f | wc -l)" -gt 0
@@ -113,7 +104,8 @@ jobs:
   release:
     name: Create GitHub Release
     needs: build
-    if: startsWith(github.ref, 'refs/tags/v')
+    # Restrict release creation to direct pushes on main/master (ignores PRs and develop branch)
+    if: github.event_name == 'push' && (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/master')
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -131,7 +123,9 @@ jobs:
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
         with:
+          tag_name: v1.0.${{ github.run_number }}     # Automatically creates a tag like "v1.0.42"
+          name: Release v1.0.${{ github.run_number }} # Sets a clean title for the release
           files: release-artifacts/**/*
           generate_release_notes: true
           draft: false
-          prerelease: ${{ contains(github.ref, '-rc') || contains(github.ref, '-beta') || contains(github.ref, '-alpha') }}
+          prerelease: false
