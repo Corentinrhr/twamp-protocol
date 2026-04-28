@@ -1,4 +1,4 @@
-name: Build TWAMP (multi-platform)
+name: Build TWAMP
 
 on:
   push:
@@ -8,7 +8,6 @@ on:
   workflow_dispatch:
 
 env:
-  BUILD_TYPE: Release
   ARTIFACT_RETENTION_DAYS: 30
 
 jobs:
@@ -19,112 +18,58 @@ jobs:
       fail-fast: false
       matrix:
         include:
-
-          # ── Linux x86-64 ──────────────────────────────────────────────────
           - target: linux-x64
             os: ubuntu-latest
-            generator: Ninja
-            cmake_extra: >-
-              -DCMAKE_C_COMPILER=gcc
-              -DCMAKE_CXX_COMPILER=g++
 
-          # ── macOS arm64 (native Apple Silicon runner) ─────────────────────
           - target: macos-arm64
             os: macos-14
-            generator: Ninja
-            cmake_extra: >-
-              -DCMAKE_OSX_ARCHITECTURES=arm64
-
-          # ── Windows x86-64 ────────────────────────────────────────────────
-          # Uses Visual Studio generator — incompatible with Ninja + -A x64
-          - target: windows-x64
-            os: windows-latest
-            generator: "Visual Studio 17 2022"
-            cmake_extra: >-
-              -A x64
-
-          # ── Android arm64-v8a (cross-compile via NDK) ─────────────────────
-          - target: android-arm64
-            os: ubuntu-latest
-            generator: Ninja
-            cmake_extra: >-
-              -DCMAKE_TOOLCHAIN_FILE=$ANDROID_NDK_ROOT/build/cmake/android.toolchain.cmake
-              -DANDROID_ABI=arm64-v8a
-              -DANDROID_PLATFORM=android-26
-              -DANDROID_STL=c++_static
 
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
         with:
           submodules: recursive
+          fetch-depth: 0
 
-      # ── Diagnose workspace structure ──────────────────────────────────────
-      # Remove this step once the build is stable
       - name: Debug workspace
         shell: bash
         run: |
-          echo "=== Working directory ==="
-          pwd
-          echo "=== Root contents ==="
+          echo "Working directory: $(pwd)"
+          echo "Repository root:"
           ls -la
-          echo "=== CMakeLists.txt locations ==="
-          find . -name "CMakeLists.txt" -maxdepth 5 | sort
+          echo
+          echo "Top-level files:"
+          find . -maxdepth 2 -type f | sort
 
-      # ── Linux dependencies (native build + Android NDK cross-compile host) ─
-      - name: Install Linux build dependencies
+      - name: Install Linux dependencies
         if: runner.os == 'Linux'
         run: |
           sudo apt-get update -qq
           sudo apt-get install -y --no-install-recommends \
-            build-essential cmake ninja-build pkg-config
+            build-essential make gcc g++ pkg-config
 
-      # ── macOS dependencies ────────────────────────────────────────────────
-      - name: Install macOS build dependencies
+      - name: Install macOS dependencies
         if: runner.os == 'macOS'
         run: |
-          brew install cmake ninja
+          brew install make || true
 
-      # ── Android – verify NDK available on the runner ─────────────────────
-      - name: Verify Android NDK
-        if: matrix.target == 'android-arm64'
-        run: |
-          echo "NDK path: $ANDROID_NDK_ROOT"
-          ls "$ANDROID_NDK_ROOT/build/cmake/android.toolchain.cmake"
-          # To pin a specific NDK version, uncomment:
-          # echo "y" | $ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager "ndk;27.0.12077973"
-          # echo "ANDROID_NDK_ROOT=$ANDROID_HOME/ndk/27.0.12077973" >> $GITHUB_ENV
-
-      # ── Configure ─────────────────────────────────────────────────────────
-      - name: Configure CMake
+      - name: Verify Makefile exists
         shell: bash
         run: |
-          cmake -S . -B build \
-            -G "${{ matrix.generator }}" \
-            -DCMAKE_BUILD_TYPE=${{ env.BUILD_TYPE }} \
-            ${{ matrix.cmake_extra }}
+          test -f Makefile || { echo "Makefile not found at repository root"; exit 1; }
 
-      # ── Build ─────────────────────────────────────────────────────────────
       - name: Build
-        run: cmake --build build --config ${{ env.BUILD_TYPE }} --parallel
+        shell: bash
+        run: |
+          make -j"$(getconf _NPROCESSORS_ONLN 2>/dev/null || sysctl -n hw.logicalcpu)"
 
-      # ── Unit tests (disabled for Android – no emulator in CI) ────────────
-      - name: Run tests
-        if: matrix.target != 'android-arm64'
-        working-directory: build
-        run: ctest --build-config ${{ env.BUILD_TYPE }} --output-on-failure
-
-      # ── Collect server binary ─────────────────────────────────────────────
       - name: Collect server binary
         shell: bash
         run: |
           mkdir -p dist/server
-          if [ "${{ runner.os }}" = "Windows" ]; then
-            find build -maxdepth 4 -name "twamp_server.exe" -exec cp {} dist/server/ \;
-          else
-            find build -maxdepth 4 -name "twamp_server" -not -name "*.cmake" -exec cp {} dist/server/ \;
-          fi
+          find . -type f -name "twamp_server" -exec cp {} dist/server/ \;
           ls -lh dist/server/
+          test "$(find dist/server -type f | wc -l)" -gt 0
 
       - name: Upload server artifact
         uses: actions/upload-artifact@v4
@@ -134,17 +79,13 @@ jobs:
           retention-days: ${{ env.ARTIFACT_RETENTION_DAYS }}
           if-no-files-found: error
 
-      # ── Collect client binary ─────────────────────────────────────────────
       - name: Collect client binary
         shell: bash
         run: |
           mkdir -p dist/client
-          if [ "${{ runner.os }}" = "Windows" ]; then
-            find build -maxdepth 4 -name "twamp_client.exe" -exec cp {} dist/client/ \;
-          else
-            find build -maxdepth 4 -name "twamp_client" -not -name "*.cmake" -exec cp {} dist/client/ \;
-          fi
+          find . -type f -name "twamp_client" -exec cp {} dist/client/ \;
           ls -lh dist/client/
+          test "$(find dist/client -type f | wc -l)" -gt 0
 
       - name: Upload client artifact
         uses: actions/upload-artifact@v4
@@ -154,7 +95,6 @@ jobs:
           retention-days: ${{ env.ARTIFACT_RETENTION_DAYS }}
           if-no-files-found: error
 
-  # ── Automatic release on tag push vX.Y.Z ─────────────────────────────────
   release:
     name: Create GitHub Release
     needs: build
