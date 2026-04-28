@@ -1,4 +1,4 @@
-name: Build TWAMP
+name: Build
 
 on:
   push:
@@ -9,7 +9,6 @@ on:
 
 env:
   ARTIFACT_RETENTION_DAYS: 30
-  # Suppress Node.js 20 deprecation warnings globally
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
 
 jobs:
@@ -44,16 +43,15 @@ jobs:
 
       - name: Install macOS dependencies
         if: runner.os == 'macOS'
-        run: |
-          brew install make || true
+        run: brew install make || true
 
       - name: Patch Makefile for CI compatibility
         shell: bash
         run: |
-          sed -i.bak 's/ twamp\.h//g' Makefile || true
-          sed -i.bak 's/-static//g' Makefile || true
-          sed -i.bak '/^CC[[:space:]]*=/d' Makefile || true
-          sed -i.bak 's/gcc/$(CC)/g' Makefile || true
+          sed -i.bak 's/ twamp\.h//g'       Makefile || true
+          sed -i.bak 's/-static//g'          Makefile || true
+          sed -i.bak '/^CC[[:space:]]*=/d'   Makefile || true
+          sed -i.bak 's/gcc/$(CC)/g'         Makefile || true
           echo "=== Patched Makefile ==="
           cat Makefile
 
@@ -61,21 +59,23 @@ jobs:
         shell: bash
         run: |
           if [ "${{ matrix.target }}" = "android-arm64" ]; then
-            echo "Configuring Android NDK Toolchain..."
-            export CC=$(ls $ANDROID_NDK_ROOT/toolchains/llvm/prebuilt/linux-x86_64/bin/aarch64-linux-android*-clang | grep -v "++" | sort -V | tail -n 1)
+            export CC=$(ls $ANDROID_NDK_ROOT/toolchains/llvm/prebuilt/linux-x86_64/bin/aarch64-linux-android*-clang \
+              | grep -v "++" | sort -V | tail -n 1)
             echo "Using compiler: $CC"
-            make CC="$CC" -j"$(getconf _NPROCESSORS_ONLN 2>/dev/null || nproc)"
+            make CC="$CC" -j"$(nproc)"
           else
             make -j"$(getconf _NPROCESSORS_ONLN 2>/dev/null || sysctl -n hw.logicalcpu)"
           fi
 
-      - name: Collect server binary
+      - name: Collect binaries
         shell: bash
         run: |
-          mkdir -p dist/server
-          find . -maxdepth 2 -type f -name "server" -exec cp {} dist/server/twamp_server \;
-          ls -lh dist/server/
-          test "$(find dist/server -type f | wc -l)" -gt 0
+          mkdir -p dist/server dist/client
+          find . -maxdepth 2 -type f -name "server" -exec cp {} dist/server/twamp_server_${{ matrix.target }} \;
+          find . -maxdepth 2 -type f -name "client" -exec cp {} dist/client/twamp_client_${{ matrix.target }} \;
+          echo "=== Collected binaries ==="
+          ls -lh dist/server/ dist/client/
+          test "$(find dist -type f | wc -l)" -eq 2
 
       - name: Upload server artifact
         uses: actions/upload-artifact@v4
@@ -84,14 +84,6 @@ jobs:
           path: dist/server/
           retention-days: ${{ env.ARTIFACT_RETENTION_DAYS }}
           if-no-files-found: error
-
-      - name: Collect client binary
-        shell: bash
-        run: |
-          mkdir -p dist/client
-          find . -maxdepth 2 -type f -name "client" -exec cp {} dist/client/twamp_client \;
-          ls -lh dist/client/
-          test "$(find dist/client -type f | wc -l)" -gt 0
 
       - name: Upload client artifact
         uses: actions/upload-artifact@v4
@@ -104,28 +96,46 @@ jobs:
   release:
     name: Create GitHub Release
     needs: build
-    # Restrict release creation to direct pushes on main/master (ignores PRs and develop branch)
     if: github.event_name == 'push' && (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/master')
     runs-on: ubuntu-latest
     permissions:
       contents: write
 
     steps:
+      - name: Checkout code
+        uses: actions/checkout@v5
+
       - name: Download all artifacts
         uses: actions/download-artifact@v4
         with:
           path: release-artifacts
           merge-multiple: false
 
-      - name: List release artifacts
-        run: find release-artifacts -type f | sort
+      # FIX: Flatten all artifact subdirectories into a single dist/ folder
+      # so softprops/action-gh-release uploads files with clean names
+      - name: Flatten artifacts into dist/
+        run: |
+          mkdir -p dist
+          find release-artifacts -type f -exec cp {} dist/ \;
+          echo "=== Files ready for release ==="
+          ls -lh dist/
+
+      # FIX: Push the tag explicitly before creating the release
+      - name: Create and push release tag
+        run: |
+          git config user.name  "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git tag "v1.0.${{ github.run_number }}"
+          git push origin "v1.0.${{ github.run_number }}"
 
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: v1.0.${{ github.run_number }}     # Automatically creates a tag like "v1.0.42"
-          name: Release v1.0.${{ github.run_number }} # Sets a clean title for the release
-          files: release-artifacts/**/*
+          tag_name: v1.0.${{ github.run_number }}
+          name: Release v1.0.${{ github.run_number }}
+          files: dist/*          # Clean flat glob — no subdirectory noise
           generate_release_notes: true
           draft: false
           prerelease: false
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
