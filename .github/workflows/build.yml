@@ -51,11 +51,14 @@ jobs:
           # 1. Remove header files from compile line (fixes macOS clang error)
           sed -i.bak 's/ twamp\.h//g' Makefile || true
           
-          # 2. Remove hardcoded -static flag (macOS lacks support, causes issues on Android)
+          # 2. Remove hardcoded -static flag (macOS lacks support, causes cross-compilation issues)
           sed -i.bak 's/-static//g' Makefile || true
           
-          # 3. Replace hardcoded gcc with $(CC) to allow Android cross-compilation
-          sed -i.bak 's/\bgcc\b/$(CC)/g' Makefile || true
+          # 3. Delete any existing CC assignment (like CC=gcc) to prevent Make recursive loop
+          sed -i.bak '/^CC[[:space:]]*=/d' Makefile || true
+          
+          # 4. Replace hardcoded gcc binary calls with $(CC)
+          sed -i.bak 's/gcc/$(CC)/g' Makefile || true
           
           echo "=== Patched Makefile ==="
           cat Makefile
@@ -77,7 +80,7 @@ jobs:
         shell: bash
         run: |
           mkdir -p dist/server
-          # Copy 'server' and rename it to 'twamp_server' for the artifact
+          # Target exactly 'server' and move it to the expected artifact name
           find . -maxdepth 2 -type f -name "server" -exec cp {} dist/server/twamp_server \;
           ls -lh dist/server/
           test "$(find dist/server -type f | wc -l)" -gt 0
@@ -94,7 +97,7 @@ jobs:
         shell: bash
         run: |
           mkdir -p dist/client
-          # Copy 'client' and rename it to 'twamp_client' for the artifact
+          # Target exactly 'client' and move it to the expected artifact name
           find . -maxdepth 2 -type f -name "client" -exec cp {} dist/client/twamp_client \;
           ls -lh dist/client/
           test "$(find dist/client -type f | wc -l)" -gt 0
