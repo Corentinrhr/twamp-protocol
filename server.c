@@ -95,6 +95,7 @@ static void usage(char *progname)
 /* Parses the command line arguments for the server */
 static int parse_options(char *progname, int argc, char *argv[])
 {
+    (void)progname;
     int opt;
     /* Removed strict argc check: getopt handles invalid cases itself */
 
