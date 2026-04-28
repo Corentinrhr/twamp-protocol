@@ -1,11 +1,8 @@
 name: Build TWAMP (multi-platform)
 
 on:
-  push:
-    branches: ["main", "master", "develop"]
-  pull_request:
-    branches: ["main", "master"]
   workflow_dispatch:
+    inputs:
 
 env:
   BUILD_TYPE: Release
