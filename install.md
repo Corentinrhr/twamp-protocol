@@ -1,64 +1,77 @@
 # Deploying TWAMP on Ubuntu
 
-This guide explains how to deploy the fork at `https://github.com/Corentinrhr/twamp-protocol` on an Ubuntu VM as a TWAMP reflector/server, using **TCP port 8862** for the TWAMP-Control connection and **UDP range 20000-30000** for TWAMP-Test sessions.
+This guide explains how to deploy the fork at `https://github.com/Corentinrhr/twamp-protocol` on an Ubuntu VM as a TWAMP reflector/server, using **TCP port 8862** for the TWAMP-Control connection and **UDP range 20000–30000** for TWAMP-Test sessions.
 
-## Target setup
+***
 
-The server will listen on **TCP 8862** for the control session, and it will allocate TWAMP test sockets from the **UDP range 20000-30000**.
-This matches the modified server logic where the server selects the effective UDP reflector port from its configured range and returns that port in `Accept-Session.Port`.
+## Target Setup
 
-## Install dependencies
+The server listens on **TCP 8862** for the control session and allocates TWAMP test sockets from the **UDP range 20000–30000** (both bounds inclusive).
+This matches the server logic where the server selects the effective UDP reflector port from its configured range and returns it in `Accept-Session.Port`.
 
-On Ubuntu, install the build toolchain, Git, the firewall tool, and a few useful diagnostics utilities.
+***
+
+## Install Dependencies
+
+Install the build toolchain, Git, the firewall tool, and a few useful diagnostics utilities.
+
+> **Note:** `build-essential` already pulls in `gcc` and `make`; they are not listed separately.
 
 ```bash
 sudo apt update && sudo apt upgrade -y
 sudo apt install -y \
   git \
   build-essential \
-  gcc \
-  make \
   ufw \
   net-tools \
   tcpdump \
-  netcat-openbsd \
   chrony
 ```
 
-## Enable time synchronization
+***
 
-TWAMP measurements depend on timestamps, so the VM clock should be synchronized before testing.
+## Enable Time Synchronization
+
+TWAMP measurements rely on accurate timestamps. Ubuntu ships with `systemd-timesyncd` enabled by default; disable it before installing `chrony` to avoid conflicts.
 
 ```bash
+sudo systemctl disable --now systemd-timesyncd
 sudo systemctl enable --now chrony
 chronyc tracking
 chronyc sources -v
 ```
 
-## Clone the fork and compile
+***
 
-Clone the fork into `/opt`, then build it with `make`.
+## Clone the Fork and Compile
+
+Clone the repository into `/opt`, then build with `make`.
 
 ```bash
 cd /opt
 sudo git clone https://github.com/Corentinrhr/twamp-protocol.git
-sudo chown -R $USER:$USER /opt/twamp-protocol
+sudo chown -R twamp:twamp /opt/twamp-protocol   # see "Create a Dedicated Service Account" below
 cd /opt/twamp-protocol
-
-make
+sudo -u twamp make
 ls -lh
 ```
 
-If the Makefile does not build correctly, compile manually with GCC:
+> **Order note:** The `chown` above assumes the `twamp` user already exists. If you are following this guide from top to bottom, create the user first (next section), then come back to clone and build, or simply run `make` as your own user and re-run `chown` after the user is created.
+
+If the Makefile does not build correctly, compile manually with GCC (using the exact flags from the Makefile):
 
 ```bash
-gcc -Wall -Wextra -O2 -o server server.c twamp.c -lm
-gcc -Wall -Wextra -O2 -o client client.c twamp.c -lm
+sudo -u twamp gcc -Wall -Wextra -Werror -g -static \
+  -o server server.c timestamp.c twamp.h
+sudo -u twamp gcc -Wall -Wextra -Werror -g -static \
+  -o client client.c timestamp.c twamp.h
 ```
 
-## Create a dedicated service account
+***
 
-The code is designed not to run as root, so create a dedicated system user and assign ownership of the application directory to it.
+## Create a Dedicated Service Account
+
+The server code explicitly refuses to run as root. Create a system user with no home directory and no login shell, then assign ownership of the application directory to it.
 
 ```bash
 sudo useradd --system \
@@ -69,9 +82,11 @@ sudo useradd --system \
 sudo chown -R twamp:twamp /opt/twamp-protocol
 ```
 
-## Configure the firewall
+***
 
-Open the SSH port, the TWAMP control port **8862/TCP**, and the full TWAMP test port range **20000-30000/UDP**.
+## Configure the Firewall
+
+Open the SSH port, the TWAMP control port **8862/TCP**, and the full TWAMP test port range **20000–30000/UDP**.
 
 ```bash
 sudo ufw allow 22/tcp
@@ -81,13 +96,15 @@ sudo ufw enable
 sudo ufw status verbose
 ```
 
-## Manual validation before systemd
+***
 
-Before creating the service, launch the server manually and confirm that it is listening on TCP 8862.
+## Manual Validation Before systemd
+
+Before creating the service, launch the server **as the `twamp` user** and confirm it is listening on TCP 8862.
 
 ```bash
 cd /opt/twamp-protocol
-./server -p 20000 -q 30000 -c 8862
+sudo -u twamp ./server -p 20000 -q 30000 -c 8862
 ```
 
 In another terminal:
@@ -97,7 +114,11 @@ ss -lntup | grep -E '8862|server'
 netstat -tulnp | grep -E '8862|server'
 ```
 
-## Create the systemd service
+> Running the server without `sudo -u twamp` would start it as your own user instead of `twamp`, which is inconsistent with the production service and may fail if the directory is already owned by `twamp`.
+
+***
+
+## Create the systemd Service
 
 Create a persistent service so the reflector starts automatically after boot.
 
@@ -137,22 +158,39 @@ To follow logs in real time:
 sudo journalctl -u twamp-server.service -f
 ```
 
-## Test from the same VM
+***
+
+## Test From the Same VM
 
 A basic local validation can be done by running the client against `127.0.0.1` on TCP 8862.
+
+### Client flag reference
+
+| Flag | Meaning |
+|------|---------|
+| `-s <addr>` | Server IP address |
+| `-c <port>` | TWAMP-Control TCP port |
+| `-n <N>` | Number of test sessions |
+| `-m <N>` | Number of packets per session |
+| `-i <ms>` | Inter-packet interval in milliseconds |
+| `-d <DSCP>` | DSCP value (e.g. `46` = Expedited Forwarding) |
+
+### Basic test
 
 ```bash
 cd /opt/twamp-protocol
 ./client -s 127.0.0.1 -c 8862 -n 1 -m 10 -i 100
 ```
 
-A DSCP test can be run as follows:
+### DSCP / QoS test
 
 ```bash
 ./client -s 127.0.0.1 -c 8862 -n 1 -m 20 -d 46 -i 50
 ```
 
-## Test from a remote client
+***
+
+## Test From a Remote Client
 
 From another Linux host where the same client binary is available, point the client at the VM address and TCP port 8862.
 
@@ -160,17 +198,28 @@ From another Linux host where the same client binary is available, point the cli
 ./client -s <VM_IP> -c 8862 -n 1 -m 10 -i 100
 ```
 
-The server will accept the TCP control session on 8862 and will then assign a UDP reflector port somewhere in the configured 20000-30000 range.
+The server accepts the TCP control session on 8862 and assigns a UDP reflector port from the configured 20000–30000 range, returning it in `Accept-Session.Port`.
+
+***
 
 ## Diagnostics
 
-Use the commands below to confirm that the process is running, ports are open, and packets are flowing.
+Use the commands below to confirm the process is running, ports are open, and packets are flowing.
 
 ```bash
+# Service status and recent logs
 sudo systemctl status twamp-server.service --no-pager
 sudo journalctl -u twamp-server.service -n 100 --no-pager
+
+# Check listening ports
 ss -lntup | grep -E '8862|2000[0-9]|30000'
+
+# Firewall rules
 sudo ufw status verbose
+
+# Live packet capture (control + test traffic)
 sudo tcpdump -i any -n 'tcp port 8862 or (udp portrange 20000-30000)' -v
+
+# Quick TCP reachability check
 nc -zv <VM_IP> 8862
 ```
