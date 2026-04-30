@@ -1,15 +1,14 @@
 # Deploying TWAMP on Ubuntu
 
-This guide explains how to deploy the fork at `https://github.com/Corentinrhr/twamp-protocol` on an Ubuntu VM as a TWAMP reflector/server, running **two independent instances**: one for IPv4 and one for IPv6.
+This guide explains how to deploy the fork at `https://github.com/Corentinrhr/twamp-protocol` on an Ubuntu VM as a TWAMP reflector/server, running a **single dual-stack instance** (IPv4 & IPv6) using the `-6` flag.
 
 | Instance | TCP Control Port | UDP Test Range |
 |----------|-----------------|----------------|
-| IPv4     | **8862**        | **20000-24999** |
-| IPv6     | **8863**        | **25000-30000** |
+| IPv4 & IPv6 | **8862** | **20000-30000** |
 
-Both UDP ranges are inclusive on both bounds. The server selects the effective reflector UDP port from its configured range and returns it in `Accept-Session.Port`.
+The UDP range is inclusive on both bounds. The server selects the effective reflector UDP port from its configured range and returns it in `Accept-Session.Port`.
 
----
+***
 
 ## Install Dependencies
 
@@ -28,7 +27,7 @@ sudo apt install -y \
   chrony
 ```
 
----
+***
 
 ## Enable Time Synchronization
 
@@ -41,7 +40,7 @@ chronyc tracking
 chronyc sources -v
 ```
 
----
+***
 
 ## Create a Dedicated Service Account
 
@@ -54,7 +53,7 @@ sudo useradd --system \
   twamp
 ```
 
----
+***
 
 ## Clone the Fork and Compile
 
@@ -77,57 +76,47 @@ sudo -u twamp gcc -Wall -Wextra -Werror -g -static \
 sudo -u twamp gcc -Wall -Wextra -Werror -g -static \
   -o client client.c timestamp.c
 ```
----
+
+***
 
 ## Configure the Firewall
 
-Open SSH, both TWAMP control ports, and both UDP test ranges.
+Open SSH, the TWAMP control port, and the UDP test range.
 
 ```bash
 sudo ufw allow 22/tcp
-sudo ufw allow 8862/tcp        # IPv4 control
-sudo ufw allow 8863/tcp        # IPv6 control
-sudo ufw allow 20000:24999/udp # IPv4 test range
-sudo ufw allow 25000:30000/udp # IPv6 test range
+sudo ufw allow 8862/tcp        # control (IPv4 & IPv6)
+sudo ufw allow 20000:30000/udp # test range (IPv4 & IPv6)
 sudo ufw enable
 sudo ufw status verbose
 ```
 
----
+***
 
 ## Manual Validation Before systemd
 
-Before creating the services, launch each instance manually to confirm it binds correctly.
+Before creating the service, launch the instance manually to confirm it binds correctly.
 
-**IPv4 instance:**
 ```bash
 cd /opt/twamp-protocol
-sudo -u twamp ./server -p 20000 -q 24999 -c 8862
+sudo -u twamp ./server -p 20000 -q 30000 -c 8862 -6
 ```
 
-**IPv6 instance :**
+Verify the port is listening:
 ```bash
-cd /opt/twamp-protocol
-sudo -u twamp ./server -p 25000 -q 30000 -c 8863 -6
+ss -lntup | grep 8862
 ```
 
-Verify both ports are listening:
-```bash
-ss -lntup | grep -E '8862|8863'
-```
+> Always use `sudo -u twamp` — running as your own user is inconsistent with the production service and may fail if the directory is owned by `twamp`.
 
-> Always use `sudo -u twamp` running as your own user is inconsistent with the production service and may fail if the directory is owned by `twamp`.
+***
 
----
-
-## Create the systemd Services
-
-### IPv4 service
+## Create the systemd Service
 
 ```bash
-sudo tee /etc/systemd/system/twamp-server4.service > /dev/null << 'EOF'
+sudo tee /etc/systemd/system/twamp-server.service > /dev/null << 'EOF'
 [Unit]
-Description=TWAMP Reflector Server (IPv4)
+Description=TWAMP Reflector Server (IPv4 & IPv6)
 Documentation=https://github.com/Corentinrhr/twamp-protocol
 After=network-online.target
 Wants=network-online.target
@@ -137,7 +126,7 @@ Type=simple
 User=twamp
 Group=twamp
 WorkingDirectory=/opt/twamp-protocol
-ExecStart=/opt/twamp-protocol/server -p 20000 -q 24999 -c 8862
+ExecStart=/opt/twamp-protocol/server -p 20000 -q 30000 -c 8862 -6
 Restart=on-failure
 RestartSec=5
 NoNewPrivileges=true
@@ -150,57 +139,26 @@ WantedBy=multi-user.target
 EOF
 ```
 
-### IPv6 service
-
-```bash
-sudo tee /etc/systemd/system/twamp-server6.service > /dev/null << 'EOF'
-[Unit]
-Description=TWAMP Reflector Server (IPv6)
-Documentation=https://github.com/Corentinrhr/twamp-protocol
-After=network-online.target
-Wants=network-online.target
-
-[Service]
-Type=simple
-User=twamp
-Group=twamp
-WorkingDirectory=/opt/twamp-protocol
-ExecStart=/opt/twamp-protocol/server -p 25000 -q 30000 -c 8863 -6
-Restart=on-failure
-RestartSec=5
-NoNewPrivileges=true
-PrivateTmp=true
-ProtectSystem=full
-ProtectHome=true
-
-[Install]
-WantedBy=multi-user.target
-EOF
-```
-
-### Enable and start both services
+### Enable and start the service
 
 ```bash
 sudo systemctl daemon-reload
-sudo systemctl enable --now twamp-server4.service
-sudo systemctl enable --now twamp-server6.service
-sudo systemctl status twamp-server4.service --no-pager
-sudo systemctl status twamp-server6.service --no-pager
+sudo systemctl enable --now twamp-server.service
+sudo systemctl status twamp-server.service --no-pager
 ```
 
 Follow logs in real time:
 ```bash
-sudo journalctl -u twamp-server4.service -f
-sudo journalctl -u twamp-server6.service -f
+sudo journalctl -u twamp-server.service -f
 ```
 
-> **Important:** If you previously had a `twamp-server.service` (without suffix) running on port 8862, stop and disable it first to avoid a port conflict:
+> **Important:** If you previously had `twamp-server4.service` or `twamp-server6.service` running, stop and disable them first to avoid port conflicts:
 > ```bash
-> sudo systemctl stop twamp-server.service
-> sudo systemctl disable twamp-server.service
+> sudo systemctl stop twamp-server4.service twamp-server6.service
+> sudo systemctl disable twamp-server4.service twamp-server6.service
 > ```
 
----
+***
 
 ## Test From the Same VM
 
@@ -226,7 +184,7 @@ cd /opt/twamp-protocol
 ### IPv6 basic test
 
 ```bash
-./client -s ::1 -c 8863 -n 1 -m 10 -i 100 -6
+./client -s ::1 -c 8862 -n 1 -m 10 -i 100 -6
 ```
 
 ### DSCP / QoS test
@@ -235,7 +193,7 @@ cd /opt/twamp-protocol
 ./client -s 127.0.0.1 -c 8862 -n 1 -m 20 -d 46 -i 50
 ```
 
----
+***
 
 ## Test From a Remote Client
 
@@ -246,37 +204,35 @@ Replace `<VM_IPv4>` and `<VM_IPv6>` with the actual server addresses.
 ./client -s <VM_IPv4> -c 8862 -n 1 -m 10 -i 100
 
 # IPv6
-./client -s <VM_IPv6> -c 8863 -n 1 -m 10 -i 100 -6
+./client -s <VM_IPv6> -c 8862 -n 1 -m 10 -i 100 -6
 ```
 
-The server accepts the TCP control session on the respective port and assigns a UDP reflector port from its configured range, returning it in `Accept-Session.Port`.
+The server accepts the TCP control session on port `8862` for both address families and assigns a UDP reflector port from the configured range, returning it in `Accept-Session.Port`.
 
----
+***
 
 ## Diagnostics
 
 ```bash
 # Service status
-sudo systemctl status twamp-server4.service --no-pager
-sudo systemctl status twamp-server6.service --no-pager
+sudo systemctl status twamp-server.service --no-pager
 
 # Recent logs
-sudo journalctl -u twamp-server4.service -n 100 --no-pager
-sudo journalctl -u twamp-server6.service -n 100 --no-pager
+sudo journalctl -u twamp-server.service -n 100 --no-pager
 
 # Check all listening ports
-ss -lntup | grep -E '8862|8863|2[0-9]{4}'
+ss -lntup | grep -E '8862|2[0-9]{4}|30000'
 
 # Firewall rules
 sudo ufw status verbose
 
-# Live packet capture - IPv4 control + test traffic
-sudo tcpdump -i any -n 'tcp port 8862 or (udp portrange 20000-24999)' -v
+# Live packet capture - control + test traffic (IPv4)
+sudo tcpdump -i any -n 'tcp port 8862 or (udp portrange 20000-30000)' -v
 
-# Live packet capture - IPv6 control + test traffic
-sudo tcpdump -i any -n 'tcp port 8863 or (udp portrange 25000-30000)' -v
+# Live packet capture - IPv6 only
+sudo tcpdump -i any -n ip6 -v
 
 # Quick TCP reachability check
 nc -zv <VM_IPv4> 8862
-nc -6 -zv <VM_IPv6> 8863
+nc -6 -zv <VM_IPv6> 8862
 ```
